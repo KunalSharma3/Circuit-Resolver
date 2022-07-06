@@ -1,0 +1,236 @@
+# Importing required libraries
+import sys
+import numpy as np
+from numpy import *
+from math import sin, cos
+
+
+# defining circuit,ac and end variables
+
+CIRCUIT = '.circuit'
+END = '.end'
+AC = ".ac"
+
+
+# variable for checking if the given netlist has ac components or dc components intailly seting as false
+isAc = False
+# Function to read and return the tokenArray in the given filename
+
+
+def createList(filename):
+    global isAc
+    try:
+        # opening the file
+        f = open(filename)
+    except:
+        print("Incorrect File Name")
+        return [False]
+
+    # reading the file
+    tokenArray = f.read()
+    f.close()
+
+    l = tokenArray.splitlines()
+    arr = []
+    tokenArray = []
+    # checking if its a proper netlist file
+    if((CIRCUIT in l) and (END in l)):
+        for i in l:
+            arr.append(i.split(' '))
+        # reversing the contents
+        arr2 = arr[::-1]
+        # variables to help loop the through the read tokenArray
+        chk = True
+        start = False
+        i = 0
+        while(chk):
+            if(arr2[i][0] == AC):
+                isAc = True  # checking if the circuit is ac
+                start = True
+            if(arr2[i][0] == END):
+                start = True
+            if(arr2[i][0] == CIRCUIT):
+                chk = False
+                break
+            if(start):
+                # collecting the required tokenArray inside the file
+                tokenArray.append([])
+                temp = list(reversed(arr2[i]))
+                end = len(temp)
+                for l in range(len(temp)):
+                    if(arr2[i][l] == '' or arr2[i][l] == ' '):
+                        end = l
+                        break
+                for j in range(len(temp)-end, len(temp)):
+                    tokenArray[-1].append(temp[j])
+                tokenArray[-1] = list(reversed(tokenArray[-1]))
+            i += 1
+        # Info from the file is extracted and stored in the list 'tokenArray'
+        return [True, tokenArray]
+    else:
+        print('Invalid circuit file.')
+        return [False]
+
+# function to parse the values of different elements
+
+
+def parValue(l):
+    # finding if 'e' is present in the value to be parsed
+    pos = l[-1].find('e')
+    if(pos != -1):
+        v1 = float(l[-1][:pos])  # if 'e' is present the value is 'x*10^y'
+        v2 = float(l[-1][pos+1:])
+        return v1*(10**v2)
+    else:
+        return float(l[-1])
+
+# to get ac value
+
+
+def acValue(val, phase):
+    return complex(val * cos(phase), j.value*sin(phase))
+
+# function to print the information about circuit
+
+
+def printInfo(x):
+    for i in range(len(x)):
+        if(i < nodes):
+            print('Voltage at node ' + str(d[i]) + ' : ', end=' ')
+            print(np.round(x[i], 6))
+        else:
+            print('Current through voltage source ' +
+                  str(d[i]) + ' : ', end=' ')
+            print(np.round(x[i], 6))
+
+
+# class defined to hold the characteristics of different components like resistor, capacior, inductor
+
+
+class component:
+    def __init__(self, l):
+        self.name = l[0]
+        self.nodes = []
+        for i in range(1, 3):
+            self.nodes.append(d[l[i]])
+        self.value = l[3]
+
+# class defined to hold characteristics of independent sources (both ac and dc)
+
+
+class source:
+    def __init__(self, l):
+        self.name = l[0]
+        self.nodes = []
+        for i in range(1, 3):
+            self.nodes.append(d[l[i]])
+        self.type = l[3]
+        if(self.type == 'ac'):
+            self.value = (parValue([l[4]]))/2
+            self.phase = (float(l[5])*(pi))/(180)
+        else:
+            self.value = parValue([l[4]])
+            self.phase = 'na'
+
+
+'''
+Main code starts from here
+'''
+
+fname = sys.argv[1]
+l = createList(fname)
+d = {'GND': 0, 0: 'GND'}  # d is a dictionary to hold the no. of nodes
+if(l[0]):  # check if the file contains tokenArray in a proper manner
+    tokenArray = list(l[1])
+    if(isAc):  # if the circuit is ac, this finds frequency and omega of the ac source
+        freq = parValue([tokenArray[0][2]])
+        w = 2*(pi)*freq
+        tokenArray = tokenArray[2:]
+    else:
+        tokenArray = tokenArray[1:]
+
+    nodeList = []
+
+    count = 1  # numbering the different type of nodes for calculation purposes
+    for token in tokenArray:
+        nodeList.append(token[1])
+        nodeList.append(token[2])
+    nodeList = list(set(nodeList))
+    nodeList = sorted(nodeList)
+    for node in nodeList:
+        if(node not in d):
+            d[node] = count
+            d[count] = node
+            count += 1
+
+    compList = []  # list to hold details of all components in the circuit like R,L,C
+    sourceList = []  # list to hold details of all independent in the circuit sources
+
+    # separting sources and components for further processing
+    for j in range(len(tokenArray)):
+        if(tokenArray[j][0][0] == 'V' or tokenArray[j][0][0] == 'I'):
+            if('ac' not in tokenArray[j] and 'dc' not in tokenArray[j]):
+                t = tokenArray[j][-1]
+                del tokenArray[j][-1]
+                tokenArray[j].append('dc')
+                tokenArray[j].append(t)
+            sourceList.append(source(tokenArray[j]))
+        else:
+            tokenArray[j][-1] = parValue(tokenArray[j])
+            compList.append(component(tokenArray[j]))
+
+    matLen = len(d)//2
+    nodes = matLen  # matLen contains the dimensions of the 'M' and 'b' matrices to be formed
+    vcs = {}  # storing the indices of current thro volt sources in the 'M' matrix
+    for i in sourceList:
+        if(i.name[0] == 'V'):
+            matLen += 1
+            vcs[i.name] = matLen-1
+            d[matLen-1] = i.name
+
+    M = zeros((matLen, matLen), dtype=complex)
+    b = zeros(matLen, dtype=complex)
+
+    M[d['GND']][d['GND']] += complex(1, 0)  # Eqn. Vgnd = 0
+    for j in sourceList:
+        if(j.name[0] == 'V'):  # Eqn. for independent voltage sources both ac and dc
+            if(j.type == 'ac'):
+                b[vcs[j.name]] += acValue(j.value, j.phase)
+            else:
+                b[vcs[j.name]] += complex(j.value, 0)
+            M[vcs[j.name]][j.nodes[0]] += complex(1, 0)
+            M[vcs[j.name]][j.nodes[1]] -= complex(1, 0)
+            M[j.nodes[0]][vcs[j.name]] -= complex(1, 0)
+            M[j.nodes[1]][vcs[j.name]] += complex(1, 0)
+        elif(j.name[0] == 'I'):  # Eqn. for independent current sources both ac and dc
+            if(j.type == 'ac'):
+                b[j.nodes[0]] += acValue(j.value, j.phase)
+                b[j.nodes[1]] -= acValue(j.value, j.phase)
+            else:
+                b[j.nodes[0]] += complex(j.value, 0)
+                b[j.nodes[1]] -= complex(j.value, 0)
+
+    for j in compList:
+        if(j.name[0] == 'R'):
+            # Equation for the nodes having resistors
+            M[j.nodes[0]][j.nodes[0]] += complex((1/j.value), 0)
+            M[j.nodes[1]][j.nodes[1]] += complex((1/j.value), 0)
+            M[j.nodes[0]][j.nodes[1]] -= complex((1/j.value), 0)
+            M[j.nodes[1]][j.nodes[0]] -= complex((1/j.value), 0)
+        elif(j.name[0] == 'L'):
+            # Equation for the nodes having inductors
+            M[j.nodes[0]][j.nodes[0]] += complex(0, -1/(j.value*w))
+            M[j.nodes[1]][j.nodes[1]] += complex(0, -1/(j.value*w))
+            M[j.nodes[0]][j.nodes[1]] -= complex(0, -1/(j.value*w))
+            M[j.nodes[1]][j.nodes[0]] -= complex(0, -1/(j.value*w))
+        elif(j.name[0] == 'C'):
+            # Equation for the nodes having capacitors
+            M[j.nodes[0]][j.nodes[0]] += complex(0, w*j.value)
+            M[j.nodes[1]][j.nodes[1]] += complex(0, w*j.value)
+            M[j.nodes[0]][j.nodes[1]] -= complex(0, w*j.value)
+            M[j.nodes[1]][j.nodes[0]] -= complex(0, w*j.value)
+
+    # finding the x matrix
+    x = linalg.solve(M, b)
+    # printing the solution - (x matrix)
+    printInfo(x)
